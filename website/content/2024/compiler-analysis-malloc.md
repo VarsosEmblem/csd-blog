@@ -2,7 +2,7 @@
 # The title of your blogpost. No sub-titles are allowed, nor are line-breaks.
 title = "Compiler-Assisted Malloc for Automatically Reducing Data Movement"
 # Date must be written in YYYY-MM-DD format. This should be updated right before the final PR is made.
-date = 2024-11-25
+date = 2024-12-12
 
 [taxonomies]
 # Keep any areas that apply, removing ones that don't. Do not add new areas!
@@ -21,6 +21,12 @@ committee = [
 ]
 
 +++
+
+In this post, I'll be discussing my part of my work on how to use compiler 
+analysis to aid in optimizing memory allocation. 
+I will begin with some background and motivation, and then introduce my 
+proposed workflow as well as some interesting 
+challenges that this work involves.
 
 # Memory Bottlenecks and Data Movement
 
@@ -87,6 +93,8 @@ cache utility, although I do have a related project that focuses on
 allocations across different types of hardware memory nodes. (Feel free to 
 [shoot me an email](mailto://soup[at]cmu.edu) for more information about either project!)
 
+So let's get started on 
+
 # Memory Allocation (``malloc``)
 There is actually a lot of potential for memory allocation schemes to influence 
 data placement! Unfortunately, the “default” Glibc malloc is basically archaic 
@@ -141,6 +149,11 @@ would only need to be re-compiled and re-linked to take advantage of this approa
 This is also language-agnostic - as long as the compiler is able to convert the 
 source code language into IR, the analysis pass can be applied. 
 
+There is [prior work](https://github.com/derrickgreenspan/LLAMA) that pokes 
+at a similar style of compiler analysis for 
+memory allocation, but only supports applications written in C and runs in 
+simulation.
+
 # Improving Cache Performance through Memory Allocation
 
 > **_Detour_: Basic Ideas of Caches**
@@ -157,7 +170,7 @@ bytes, and an application requests 8 bytes of data at address `0xB0BACAFE`, all
 > If the cache is already full, then a cached line would have to be 
 > _evicted_ for a new line to be cached. 
 > ![Cache Lines](cache-line.png)
-> Hot-cold separation in caches in a concept that helps “hot” (frequently 
+> Hot-cold separation in caches is a concept that helps “hot” (frequently 
 used) data stay in the cache, while making it likely that “cold” 
 (infrequently used) data would not stay in the cache for long: 
 Hot data should be stored separately from cold data, 
@@ -281,7 +294,7 @@ still under experimentation:
 becomes very important. On one hand when the window size is smaller, the level of 
 co-access needed to form a pair is much higher. On the other hand, if the window size 
 is too large, the co-accesses will be weaker, and the analysis will become much 
-slower due to path explosion.
+slower due to [path explosion](https://en.wikipedia.org/wiki/Path_explosion).
 - The use of co-access pairs' ranks to form csets can result in some interesting 
 scenarios. For example, consider the scenario when Object A and Object B form a 
 co-access pair, and Object B and Object C form a co-access pair, but Object A 
@@ -303,6 +316,9 @@ unideal to pool together co-access sets if the sets' data objects are in high
 contention across multiple threads - pooling could increase [false sharing](https://en.wikipedia.org/wiki/False_sharing) 
 and degrade performance.
 
+# Relevant Links
+- [LLAMA - Automatic Memory Allocations](https://github.com/derrickgreenspan/LLAMA)
+- [Affinity Alloc](https://www.cs.cmu.edu/~beckmann/publications/papers/2023.micro.affinity.pdf)
 
 <style>
 img[alt="Compiler (Modded)"], img[alt="Compiler (Unmodded)"] {
