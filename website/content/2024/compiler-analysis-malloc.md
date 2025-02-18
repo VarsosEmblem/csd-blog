@@ -39,7 +39,7 @@ therefore less _compute-bound_ and more _memory-bound_.
 
 Not all memory-bound applications, however, have the same flavor of memory 
 demands - some may benefit more from better memory latency, and others may 
-benefit more from better memory bandwidth.
+benefit more from better memory bandwidth or larger capacity.
 
 Memory latency is usually a problem when memory takes a long time to retrieve 
 a piece of data and provide the data to the requester. Generally, memory that 
@@ -47,114 +47,6 @@ has high capacity and memory that is physically far from the compute core will
 have higher latency. In a traditional memory architecture, this is addressed 
 by placing small, fast caches next to CPUs, in hopes that a data fetch request 
 would be handled by the cache, rather than slow main memory.
-
-![Memory Hierarchy Diagram](mem_hierarchy.png)
-
-Memory bandwidth is a problem when memory cannot handle the volume of requests. 
-This easily occurs when memory access patterns are highly irregular, since 
-the requested data is rarely cached, causing nearly every request to go to 
-main memory (which usually has insufficient bandwidth.)
-
-The core problem behind both types of memory bottlenecks is, more broadly, 
-data movement. Data movement inherently has costs associated with it, but 
-as it turns out, we can reduce data movement with careful data placement. 
-
-
-# Key Concepts for Data Placement
-
-Data placement is a hard problem that can be solved on a few levels - 
-should a data object go onto one memory node or another? What if memory 
-nodes have different types of hardware memory (e.g. traditional DDR vs 
-not-DDR)? Can data objects be placed for optimal cache performance? 
-
-Generally, optimizing data placement is either in form of:
-
-1. **Tailored Programming**: Application programmer analyzes the application’s 
-memory accesses, and either arranges data objects in a certain way or rewrites 
-the calculations to make better use of existing data objects’ layouts. 
-(Example: [Compressing matrices or changing order of operations for matrix transformations](https://people.eecs.berkeley.edu/~demmel/cs267_Spr99/Lectures/Lect_02_1999b.pdf)), or
-
-2. **One-Size-Fits-All**: The programmer uses pre-optimized data structures. 
-For example, a Python programmer can use libraries with optimized hash tables. 
-Whoever implemented the libraries is hoping that the programmer will use the data 
-structures in a predictable/canonical way. 
-
-Much like with clothes shopping, the tailored version performs better but 
-requires high (human) overhead, while the one-size-fits-all version fits almost 
-nobody quite right.
-
-Some key concepts for data placement include:
-- Some memory nodes may be closer to compute nodes and therefore faster to access
-- Memory nodes may have different bandwidth/latency/capacity capabilities
-- Some data objects could stay in the cache, and thus the main memory node that it is allocated on would not matter
-
-For the rest of this blog, we'll mostly focus on optimizing data placement for 
-cache utility, although I do have a related project that focuses on
-allocations across different types of hardware memory nodes. (Feel free to 
-[shoot me an email](mailto://soup[at]cmu.edu) for more information about either project!)
-
-So let's get started on 
-
-# Memory Allocation (``malloc``)
-There is actually a lot of potential for memory allocation schemes to influence 
-data placement! Unfortunately, the “default” Glibc malloc is basically archaic 
-and doesn’t try to do much with data placement. It was designed with the premise 
-that “if `malloc` runs faster (returns quickly), then the overall program runs faster.” 
-This made sense in the 1970s when almost everything was CPU-bound, but nowadays 
-this is a very outdated idea.
-
-There have been several efforts to optimize data placement through malloc implementations, 
-but these are mostly with custom memory allocators. Some examples of this include 
-the [JVM custom allocator](https://help.salesforce.com/s/articleView?id=001118058&type=1), 
-the [Intel TBB allocator](https://www.bsdforge.com/docs/sharedocs/tbb/a00551.html), 
-and so on. The allocators 
-are so finely tuned to their intended applications to the point that trying to 
-re-use these allocators for other applications would be unlikely to succeed.
-
-# Tweaking the Compilation Pipeline
-As shown below, the typical compilation pipeline involves turning source code into 
-application executables, and then linking to relevant libraries.
-
-![Compiler (Unmodded)](cama-nomods.png)
-
-The compiler’s role is to convert source code into Intermediate Representation (IR) 
-(which you can think of as a language “between” source code and assembly), run 
-analysis passes on the IR, run transformation passes on the IR, and then convert it into 
-assembly/binary. Analysis passes do things like dependencies between variables, 
-and transformations usually are compiler optimizations (such as loop unrolling) 
-that make use of analysis results. 
-
-![Basic Compilation Steps](compiler-passes.png)
-
-The idea in my research is that we don’t need to throw away compiler analysis results 
-by the end of compilation. Compiler analysis results can be useful not only in 
-compiler optimizations, but also in optimizations outside of the compiler. In 
-our case, we want `malloc` to use compiler analysis results.
-
-![Compiler (Modded)](cama-mods.png)
-
-In my approach, I introduce a new analysis pass that analyzes the memory access 
-patterns in the application. The results of the analysis are embedded into the 
-final application executable, and a library (e.g. the `malloc` library) would 
-be able to access the analysis results and react accordingly. In the context of 
-memory allocation, I provide an implementation of `malloc` that reads the results 
-from the analysis pass and then decides where to place data objects based on 
-those results.
-
-One of the advantages of this approach is that this requires no change to the 
-application source code - after all, the `malloc` interface 
-(i.e. ``malloc``/`free`/`realloc`/`calloc`) can be wholly unchanged. The application 
-would only need to be re-compiled and re-linked to take advantage of this approach.
-
-This is also language-agnostic - as long as the compiler is able to convert the 
-source code language into IR, the analysis pass can be applied. 
-
-There is [prior work](https://github.com/derrickgreenspan/LLAMA) that pokes 
-at a similar style of compiler analysis for 
-memory allocation, but only supports applications written in C and runs in 
-simulation.
-
-# Improving Cache Performance through Memory Allocation
 
 > **_Detour_: Basic Ideas of Caches**
 > </br></br>
@@ -183,6 +75,125 @@ when the hot data is later accessed again, we would need to move the line
 of data back into the cache, increasing data movement.
 <p></p>
 </br>
+
+![Memory Hierarchy Diagram](mem_hierarchy.png)
+
+Memory bandwidth is a problem when memory cannot handle the volume of requests. 
+This easily occurs when memory access patterns are highly irregular, since 
+the requested data is rarely cached, causing nearly every request to go to 
+main memory (which usually has insufficient bandwidth.)
+
+Ultimately, the core problem behind _both_ types of memory bottlenecks is, more broadly, 
+data movement. There is an inherent cost to data movement, whether it be the data 
+movement between disk and main memory, between main memory 
+and caches, or even between different caches. As it turns out, we can reduce data 
+movement with careful _data placement_. 
+
+
+# Key Concepts for Data Placement
+
+Data placement is a hard problem that can be solved on a few levels: 
+Should a data object go onto one memory node or another? What if memory 
+nodes have different types of hardware memory with different tradeoffs 
+(e.g. one type may have better bandwidth but worse latency)? 
+Can data objects be arranged to improve the effect of prefetching and make
+better use of caches? 
+
+Generally, optimizing data placement is either in form of:
+
+1. **Tailored Programming**: Application programmer analyzes the application’s 
+memory accesses, and either arranges data objects in a certain way or rewrites 
+the calculations to make better use of existing data objects’ layouts. 
+(Example: [Compressing matrices or changing order of operations for matrix transformations](https://people.eecs.berkeley.edu/~demmel/cs267_Spr99/Lectures/Lect_02_1999b.pdf)), or
+
+2. **One-Size-Fits-All**: The programmer uses pre-optimized data structures. 
+For example, a Python programmer can use libraries with optimized hash tables. 
+Whoever implemented the libraries is hoping that the programmer will use the data 
+structures in a predictable/canonical way. 
+
+Much like with clothes shopping, the tailored version performs better but 
+requires high (human) overhead, while the one-size-fits-all version fits almost 
+nobody quite right.
+
+Some key concepts for data placement include:
+- Some memory nodes may be closer to compute nodes and therefore faster to access
+- Memory nodes may have different bandwidth/latency/capacity capabilities
+- Some data objects might stay cached, and thus the particular main memory node 
+that it is allocated on would matter far less
+
+For the rest of this blog, we'll mostly focus on optimizing data placement for 
+cache utility, although I do have a related project that focuses on
+allocations across different types of hardware memory nodes. (Feel free to 
+[shoot me an email](mailto://soup[at]cmu.edu) for more information about either project!)
+
+So let's get started on 
+
+# Memory Allocation (``malloc``)
+There is actually a lot of potential for memory allocation schemes to influence 
+data placement! Unfortunately, the “default” Glibc malloc is basically archaic 
+and doesn’t try to do much with data placement. It was designed with the premise 
+that “if `malloc` runs faster (returns quickly), then the overall program runs faster.” 
+This made sense in the 1970s when almost everything was CPU-bound, but nowadays 
+this is a very outdated and simplistic idea.
+
+There have been several efforts to optimize data placement through malloc implementations. 
+On one hand, custom memory allocators like the 
+[JVM custom allocator](https://help.salesforce.com/s/articleView?id=001118058&type=1) 
+and the [Intel TBB allocator](https://www.bsdforge.com/docs/sharedocs/tbb/a00551.html) 
+are so finely tuned to their intended applications to the point that trying to 
+re-use these allocators for _other_ applications would be unlikely to succeed.
+On the other hand, modern general-purpose memory allocators such as 
+[mimalloc](https://github.com/microsoft/mimalloc) have moved away from that 
+notion and now include optimizations like [sharding malloc's internal bookkeeping 
+structures](https://www.microsoft.com/en-us/research/uploads/prod/2019/06/mimalloc-tr-v1.pdf), 
+which helps for multi-threaded applications with shared states. These optimizations 
+are designed in anticipation of potential applications that will be ran.
+
+But what if the memory allocator could receive actual information about the application's 
+behavior and characteristics _before_ it is even ran? This leads us to the idea of 
+tweaking the compilation pipeline to pass information from the compiler to 
+the memory allocator.
+
+# Tweaking the Compilation Pipeline
+As shown below, the typical compilation pipeline involves turning source code into 
+application executables, and then linking to relevant libraries.
+
+![Compiler (Unmodded)](cama-nomods.png)
+
+The compiler’s role is to convert source code into Intermediate Representation (IR) 
+(which you can think of as a language “between” source code and assembly), run 
+analysis passes on the IR, run transformation passes on the IR, and then convert it into 
+assembly/binary. Analysis passes do things like identifying dependencies between variables, 
+whereas transformation passes usually perform compiler optimizations (such as 
+[loop unrolling](https://www.d.umn.edu/~gshute/arch/loop-unrolling.html)) 
+while making use of analysis results. 
+
+![Basic Compilation Steps](compiler-passes.png)
+
+The idea in my research is that we don’t need to throw away compiler analysis results 
+by the end of compilation. Compiler analysis results can be useful not only in 
+compiler optimizations, but also in optimizations outside of the compiler. In 
+our case, we want `malloc` to use compiler analysis results.
+
+![Compiler (Modded)](cama-mods.png)
+
+In my approach, I introduce a new analysis pass that analyzes the memory access 
+patterns in the application. The results of the analysis are embedded into the 
+final application executable, and a library (e.g. the `malloc` library) would 
+be able to access the analysis results and react accordingly. In the context of 
+memory allocation, I provide an implementation of `malloc` that reads the results 
+from the analysis pass and then decides where to place data objects based on 
+those results.
+
+One of the advantages of this approach is that this requires no change to the 
+application source code. After all, the `malloc` interface 
+(i.e. ``malloc``/`free`/`realloc`/`calloc`) can be wholly unchanged. The application 
+would only need to be re-compiled and re-linked to take advantage of this approach.
+
+This is also language-agnostic: as long as the compiler is able to convert the 
+source code language into IR, the analysis pass can be applied. 
+
+# Improving Cache Performance through Memory Allocation
 
 The goal is to arrange data objects next to each other so that the objects 
 are likely to share cache lines. If arranged carefully, fetching one data 
@@ -232,7 +243,7 @@ y would be a clear example of a co-access pair. Each co-access pair will have a
 rank that describes how strong the co-access is.
 
 Once multiple co-access pairs have been identified, we use 
-[Union-Find](https://en.wikipedia.org/wiki/Disjoint-set_data_structure) 
+[Union-Find](https://www.cs.cmu.edu/~15451-f15/lectures/lect0914.pdf) 
 to form groups of co-access pairs. These groups are then used as csets. The cset 
 analysis pass will then tag the calls to `malloc` with a cset ID for calls to `malloc` 
 that produce variables belonging to the same cset. 
@@ -253,10 +264,7 @@ created but does not fit into an existing pool, a new pool is reserved with a si
 twice that of the previously reserved pool (for the same cset).
 
 In the below example, we consider a dictionary implemented by a linked list, 
-where the nodes’ values are pointers to separately allocated objects. If a `dict.find`
- function is implemented by just stepping through the linked list until a matching key 
-is found, then it is likely that the nodes themselves would form a cset, and the 
-values themselves would form a different cset.
+where the nodes’ values are pointers to separately allocated objects:
 
 ```c
 struct list_node {
@@ -280,6 +288,10 @@ def find(int key) {
     return None;
 }
 ```
+If a `dict.find`
+ function is implemented by just stepping through the linked list until a matching key 
+is found, then it is likely that the nodes themselves would form a cset, and the 
+values themselves would form a separate cset:
 
 ![Linked List Dictionary example of Csets in Action](linked-list-csets.png)
 
